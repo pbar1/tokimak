@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -5,6 +6,7 @@ use clap::Parser;
 use futures::StreamExt;
 use indicatif::ProgressStyle;
 use rand::Rng;
+use tokimak::TaskReactor;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -70,6 +72,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
 #[instrument(skip_all, fields(indicatif.pb_show))]
 async fn real_main(cli: Cli) -> Result<()> {
     // Setup progress bar goal
@@ -81,40 +85,25 @@ async fn real_main(cli: Cli) -> Result<()> {
         workers = metrics.num_workers(),
     );
 
-    let _outcome = futures::stream::iter(0..cli.tasks)
-        .map(do_work_spawn)
-        .for_each_concurrent(cli.concurrency, |f| async { f.await })
-        .await;
+    let stream = futures::stream::iter(0..cli.tasks).map(do_work);
+
+    let mut tasks = TaskReactor::buffer_spawned(cli.concurrency, stream);
+
+    while let Some(result) = tasks.next().await {
+        Span::current().pb_inc(1);
+        if let Err(error) = result {
+            error!(?error, "task join error");
+        }
+    }
 
     Ok(())
 }
 
-async fn do_work_spawn(n: usize) {
-    tokio::task::Builder::new()
-        .name(&format!("t-{n}"))
-        .spawn(do_work_inner(n))
-        .unwrap()
-        .await
-        .unwrap();
-
-    Span::current().pb_inc(1);
-}
-
-async fn do_work_spawn_local(n: usize) {
-    tokio::task::Builder::new()
-        .name(&format!("t-{n}"))
-        .spawn_local(do_work_inner(n))
-        .unwrap()
-        .await
-        .unwrap();
-
-    Span::current().pb_inc(1);
-}
-
 /// Simulates some work that takes some time and can time out
-async fn do_work_inner(n: usize) {
+async fn do_work(n: usize) {
+    let total_tasks = ACTIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let metrics = tokio::runtime::Handle::current().metrics();
-    let tasks = metrics.num_alive_tasks();
+    let runtime_tasks = metrics.num_alive_tasks();
 
     let sleep = rand::thread_rng().gen_range(0..20);
 
@@ -125,13 +114,14 @@ async fn do_work_inner(n: usize) {
 
     if n % 10_000 == 0 {
         match result {
-            Ok(_ok) => info!(n, sleep, tasks, "success"),
-            Err(_err) => error!(n, sleep, tasks, "failure"),
+            Ok(_ok) => info!(n, sleep, total_tasks, runtime_tasks, "success"),
+            Err(_err) => error!(n, sleep, total_tasks, runtime_tasks, "failure"),
         }
     } else {
         match result {
-            Ok(_ok) => debug!(n, sleep, tasks, "success"),
-            Err(_err) => debug!(n, sleep, tasks, "failure"),
+            Ok(_ok) => debug!(n, sleep, total_tasks, runtime_tasks, "success"),
+            Err(_err) => debug!(n, sleep, total_tasks, runtime_tasks, "failure"),
         }
     }
+    ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 }
