@@ -1,7 +1,11 @@
 [package]
 name = "tokimak"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
+authors = ["Pierce Bartine (pbar)"]
+license = "MIT"
+repository = "https://github.com/pbar1/tokimak"
+description = "Tokio task reactor"
 
 [dependencies]
 futures = "0.3"
