@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ssh-test
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ssh-servers
+  namespace: ssh-test
+spec:
+  serviceName: "ssh"
+  replicas: 25
+  selector:
+    matchLabels:
+      app: ssh
+  template:
+    metadata:
+      labels:
+        app: ssh
+    spec:
+      containers:
+      - name: ssh
+        image: lscr.io/linuxserver/openssh-server:latest
+        env:
+        - name: SUDO_ACCESS
+          value: "true"
+        - name: PASSWORD_ACCESS
+          value: "true"
+        - name: USER_PASSWORD
+          value: "password"
+        - name: USER_NAME
+          value: "user"
+        ports:
+        - containerPort: 2222
+          name: ssh
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh
+  namespace: ssh-test
+spec:
+  type: LoadBalancer
+  selector:
+    app: ssh
+  ports:
+  - port: 2222
+    targetPort: 2222
+

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+
+import yaml
+
+docker_compose = {
+    "services": {
+        f"ssh-{n}": {
+            "image": "lscr.io/linuxserver/openssh-server:latest",
+            "container_name": f"ssh-{n}",
+            "hostname": f"ssh-{n}",
+            "environment": [
+                "SUDO_ACCESS=true",
+                "PASSWORD_ACCESS=true",
+                "USER_PASSWORD=password",
+                "USER_NAME=user",
+            ],
+            "ports": [f"{64000+n}:2222"],
+        }
+        for n in range(100)
+    }
+}
+
+with open("docker-compose.yml", mode="w") as f:
+    f.write(yaml.safe_dump(docker_compose))
+
+print("Generated docker-compose.yml")
+print()
+print("To start all ssh servers:")
+print()
+print("  docker-compose up -d")
+print()
+print("To stop all ssh servers:")
+print()
+print("  docker-compose down")

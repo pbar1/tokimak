@@ -1,12 +1,16 @@
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use clap::Parser;
 use futures::StreamExt;
 use indicatif::ProgressStyle;
 use rand::Rng;
 use tokimak::TaskReactor;
+use tokio::io::AsyncWriteExt;
+use tokio::net::ToSocketAddrs;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -105,23 +109,118 @@ async fn do_work(n: usize) {
     let metrics = tokio::runtime::Handle::current().metrics();
     let runtime_tasks = metrics.num_alive_tasks();
 
-    let sleep = rand::thread_rng().gen_range(0..20);
-
-    let result = tokio::time::timeout(Duration::from_secs(15), async {
-        tokio::time::sleep(Duration::from_secs(sleep)).await;
-    })
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        connect_and_run("10.0.0.54:31755", "user", "password", "whoami"),
+    )
     .await;
 
     if n % 10_000 == 0 {
         match result {
-            Ok(_ok) => info!(n, sleep, total_tasks, runtime_tasks, "success"),
-            Err(_err) => error!(n, sleep, total_tasks, runtime_tasks, "failure"),
+            Ok(Ok(output)) => info!(
+                n,
+                total_tasks,
+                runtime_tasks,
+                exit_code = output.exit_code,
+                stdout = String::from_utf8(output.stdout).unwrap().trim(),
+                stderr = String::from_utf8(output.stderr).unwrap().trim(),
+                "success"
+            ),
+            Ok(Err(error)) => error!(n, total_tasks, runtime_tasks, ?error, "failed"),
+            Err(_err) => error!(n, total_tasks, runtime_tasks, "timeout"),
         }
     } else {
         match result {
-            Ok(_ok) => debug!(n, sleep, total_tasks, runtime_tasks, "success"),
-            Err(_err) => debug!(n, sleep, total_tasks, runtime_tasks, "failure"),
+            Ok(Ok(output)) => debug!(
+                n,
+                total_tasks,
+                runtime_tasks,
+                exit_code = output.exit_code,
+                stdout = String::from_utf8(output.stdout).unwrap().trim(),
+                stderr = String::from_utf8(output.stderr).unwrap().trim(),
+                "success"
+            ),
+            Ok(Err(error)) => debug!(n, total_tasks, runtime_tasks, ?error, "failed"),
+            Err(_err) => debug!(n, total_tasks, runtime_tasks, "timeout"),
         }
     }
     ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+// SSH Client -----------------------------------------------------------------
+
+#[derive(Debug)]
+struct RunOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: Option<u32>,
+}
+
+async fn connect_and_run(
+    target: impl ToSocketAddrs,
+    user: &str,
+    password: &str,
+    command: &str,
+) -> Result<RunOutput> {
+    let config = russh::client::Config {
+        inactivity_timeout: Some(Duration::from_secs(30)),
+        ..Default::default()
+    };
+    let config = Arc::new(config);
+    let mut session = russh::client::connect(config, target, SshClientHandler).await?;
+
+    session.authenticate_password(user, password).await?;
+
+    let mut channel = session.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    let mut exit_code = None;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+
+    loop {
+        // There's an event available on the session channel
+        let Some(msg) = channel.wait().await else {
+            break;
+        };
+        match msg {
+            // Copy stdout
+            russh::ChannelMsg::Data { ref data } => {
+                stdout.write_all(data).await?;
+                stdout.flush().await?;
+            }
+            // Copy stderr
+            russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
+                stderr.write_all(data).await?;
+                stderr.flush().await?;
+            }
+            // The command has returned an exit code
+            russh::ChannelMsg::ExitStatus { exit_status } => {
+                exit_code = Some(exit_status);
+                // cannot leave the loop immediately, there might still be
+                // more data to receive
+            }
+            _ => {}
+        }
+    }
+
+    Ok(RunOutput {
+        stdout,
+        stderr,
+        exit_code,
+    })
+}
+
+struct SshClientHandler;
+
+#[async_trait]
+impl russh::client::Handler for SshClientHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &russh_keys::key::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
 }

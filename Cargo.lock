@@ -2209,12 +2209,14 @@ name = "tokimak"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "console-subscriber",
  "futures",
  "indicatif",
  "rand",
  "russh",
+ "russh-keys",
  "tokio",
  "tokio-util",
  "tracing",
