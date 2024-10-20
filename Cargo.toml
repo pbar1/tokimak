@@ -1,6 +1,6 @@
 [package]
 name = "tokimak"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["Pierce Bartine (pbar)"]
 license = "MIT"
